@@ -5,7 +5,7 @@ couac 🦆🛢️
 Go library that provides a helpful wrapper around ADBC for DuckDB.
 
 ## Features 
-- Bulk inserts into DuckDB from an Arrow recod
+- Bulk inserts into DuckDB from an Arrow record
 
 ## Planned
 - Support for other statement operations supported in ADBC
