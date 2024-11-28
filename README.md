@@ -38,4 +38,4 @@ Feedback and PRs welcome.
 
 ## License
 
-Bufarrow is released under the Apache 2.0 license. See [LICENCE.txt](LICENCE.txt)
+Couac is released under the Apache 2.0 license. See [LICENCE.txt](LICENCE.txt)
