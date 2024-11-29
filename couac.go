@@ -28,7 +28,9 @@ type Quacker struct {
 	drv adbc.Driver
 	db  adbc.Database
 	// duckdb database connections
-	ducklings []*QuackCon
+	ducklings  []*QuackCon
+	path       string
+	driverPath string
 }
 
 // QuackCon represents a connection to a DuckDB database.
@@ -38,24 +40,53 @@ type QuackCon struct {
 }
 type Statement = adbc.Statement
 
-// NewDuck opens a DuckDB database. The driverPath argument specifies the location of
-// libduckdb.so, if driverPath is empty it will default to /usr/local/lib.
-func NewDuck(path string, driverPath *string) (*Quacker, error) {
+// Option configures a Quacker
+type (
+	Option func(config)
+	config *Quacker
+)
+
+// WithPath option provides the location of the DuckDB file,
+// if none provided, defaults to in-memory.
+func WithPath(path string) Option {
+	return func(cfg config) {
+		cfg.path = path
+	}
+}
+
+// WithDriverPath specifies the location of  libduckdb.so, if driver
+// path is empty, defaults to /usr/local/lib.
+func WithDriverPath(path string) Option {
+	return func(cfg config) {
+		cfg.driverPath = path
+	}
+}
+
+// NewDuck opens a DuckDB database. WithPath option provides the location of
+// the DuckDB file, if none provided, defaults to in-memory.
+// The WithDriverPath specifies the location of  libduckdb.so, if driver
+// path is empty, defaults to /usr/local/lib.
+func NewDuck(opts ...Option) (*Quacker, error) {
 	var err error
 	var dPath string
-	if driverPath == nil {
+	couac := new(Quacker)
+	for _, opt := range opts {
+		opt(couac)
+	}
+	if couac.driverPath == "" {
 		dPath = "/usr/local/lib/libduckdb.so"
 	} else {
-		dPath = *driverPath
+		dPath = couac.driverPath
 	}
-	couac := new(Quacker)
 	couac.ctx = context.TODO()
 	couac.drv = drivermgr.Driver{}
-	couac.db, err = couac.drv.NewDatabase(map[string]string{
-		"driver":     dPath,
-		"entrypoint": "duckdb_adbc_init",
-		"path":       path,
-	})
+	dbOpts := make(map[string]string)
+	dbOpts["driver"] = dPath
+	dbOpts["entrypoint"] = "duckdb_adbc_init"
+	if couac.path != "" {
+		dbOpts["path"] = couac.path
+	}
+	couac.db, err = couac.drv.NewDatabase(dbOpts)
 	if err != nil {
 		return nil, fmt.Errorf("new database error: %v", err)
 	}
@@ -227,7 +258,7 @@ func (q *QuackCon) IngestCreateAppend(ctx context.Context, destTable string, rec
 		return u, fmt.Errorf("nil arrow record")
 	}
 
-	schema, _ := q.conn.GetTableSchema(q.parent.ctx, nil, nil, destTable)
+	schema, _ := q.conn.GetTableSchema(ctx, nil, nil, destTable)
 
 	stmt, err := q.conn.NewStatement()
 	if err != nil {
