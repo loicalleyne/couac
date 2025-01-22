@@ -3,8 +3,8 @@ module github.com/loicalleyne/couac
 go 1.23.3
 
 require (
-	github.com/apache/arrow-adbc/go/adbc v1.3.0
-	github.com/apache/arrow-go/v18 v18.1.0
+	github.com/apache/arrow-adbc/go/adbc v1.4.0
+	github.com/apache/arrow-go/v18 v18.1.1-0.20250116162745-f533d2066dee
 	github.com/goccy/go-json v0.10.4
 )
 
@@ -20,5 +20,5 @@ require (
 	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/tools v0.29.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
-	google.golang.org/protobuf v1.36.1 // indirect
+	google.golang.org/protobuf v1.36.2 // indirect
 )
