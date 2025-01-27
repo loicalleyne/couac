@@ -3,12 +3,12 @@ module github.com/loicalleyne/couac
 go 1.23.3
 
 require (
-	github.com/apache/arrow-adbc/go/adbc v1.3.0
-	github.com/apache/arrow-go/v18 v18.1.0
+	github.com/apache/arrow-adbc/go/adbc v1.4.0
+	github.com/apache/arrow-go/v18 v18.1.1-0.20250116162745-f533d2066dee
+	github.com/goccy/go-json v0.10.4
 )
 
 require (
-	github.com/goccy/go-json v0.10.4 // indirect
 	github.com/google/flatbuffers v24.12.23+incompatible // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
