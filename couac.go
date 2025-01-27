@@ -28,15 +28,18 @@ type Quacker struct {
 	drv adbc.Driver
 	db  adbc.Database
 	// duckdb database connections
-	ducklings  []*QuackCon
+	ducklings []*QuackCon
+	// path to database file, in-memory if empty
 	path       string
 	driverPath string
 }
 
 // QuackCon represents a connection to a DuckDB database.
 type QuackCon struct {
-	parent *Quacker
-	conn   adbc.Connection
+	parent   *Quacker
+	conn     adbc.Connection
+	catalog  *string
+	dbSchema *string
 }
 type Statement = adbc.Statement
 
@@ -62,9 +65,16 @@ func WithDriverPath(path string) Option {
 	}
 }
 
+// WithContext specifies the context for new database connections.
+func WithContext(ctx context.Context) Option {
+	return func(cfg config) {
+		cfg.ctx = ctx
+	}
+}
+
 // NewDuck opens a DuckDB database. WithPath option provides the location of
 // the DuckDB file, if none provided, defaults to in-memory.
-// The WithDriverPath specifies the location of  libduckdb.so, if driver
+// The WithDriverPath specifies the location of libduckdb.so, if driver
 // path is empty, defaults to /usr/local/lib.
 func NewDuck(opts ...Option) (*Quacker, error) {
 	var err error
@@ -78,11 +88,15 @@ func NewDuck(opts ...Option) (*Quacker, error) {
 	} else {
 		dPath = couac.driverPath
 	}
-	couac.ctx = context.TODO()
+	if couac.ctx == nil {
+		couac.ctx = context.TODO()
+	}
 	couac.drv = drivermgr.Driver{}
 	dbOpts := make(map[string]string)
+	// path to duckdb driver file
 	dbOpts["driver"] = dPath
 	dbOpts["entrypoint"] = "duckdb_adbc_init"
+	// if path is empty, defaults to in-memory
 	if couac.path != "" {
 		dbOpts["path"] = couac.path
 	}
@@ -90,14 +104,16 @@ func NewDuck(opts ...Option) (*Quacker, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new database error: %v", err)
 	}
-
 	return couac, nil
 }
 
+// NewConnection returns a new connection to the database. It is best practice to
+// close connections after use, however Quacker.Close() will also close any open connections
+// before closing the database.
 func (q *Quacker) NewConnection() (*QuackCon, error) {
 	var err error
 	qc := new(QuackCon)
-	qc.conn, err = q.db.Open(context.Background())
+	qc.conn, err = q.db.Open(q.ctx)
 	if err != nil {
 		return nil, fmt.Errorf("db open error: %v", err)
 	}
@@ -106,8 +122,33 @@ func (q *Quacker) NewConnection() (*QuackCon, error) {
 	return qc, nil
 }
 
+// NewConnectionWithOpts returns a new connection to the database, specifying the
+// catalog and schema. It is best practice toclose connections after use,
+// however Quacker.Close() will also close any open connections before closing
+// the database.
+func (q *Quacker) NewConnectionWithOpts(catalog, schema string) (*QuackCon, error) {
+	var err error
+	qc := new(QuackCon)
+	qc.catalog = &catalog
+	qc.dbSchema = &schema
+	qc.conn, err = q.db.Open(q.ctx)
+	if err != nil {
+		return nil, fmt.Errorf("db open error: %v", err)
+	}
+	qc.parent = q
+	q.ducklings = append(q.ducklings, qc)
+	return qc, nil
+}
+
+// ConnectionCount returns the number of open connections.
+func (q *Quacker) ConnectionCount() int { return len(q.ducklings) }
+
+// DefaultContext returns the default context of the database.
+func (q *Quacker) DefaultContext() context.Context { return q.ctx }
+
 // Close closes the database and releases any associated resources.
-// It is important to do this to allow DuckDB to properly commit all WAL file changes before closing.
+// It is important to do this to allow DuckDB to properly commit all WAL file
+// changes before closing.
 func (q *Quacker) Close() {
 	for _, d := range q.ducklings {
 		d.conn.Close()
@@ -115,9 +156,29 @@ func (q *Quacker) Close() {
 	q.db.Close()
 }
 
+func (q *Quacker) removeConn(i int) {
+	if len(q.ducklings) > 0 {
+		q.ducklings[i] = q.ducklings[len(q.ducklings)-1]
+		q.ducklings = q.ducklings[:len(q.ducklings)-1]
+	}
+}
+
+// Catalog returns the connection's catalog if set. Nil represents default catalog.
+func (q *QuackCon) Catalog() *string { return q.catalog }
+
+// DBSchema returns the connnection's database schema if set. Nil represents default schema.
+func (q *QuackCon) DBSchema() *string { return q.dbSchema }
+
 // Close closes the connection to database and releases any associated resources.
-// It is important to do this to allow DuckDB to properly commit all WAL file changes before closing.
+// It is important to do this to allow DuckDB to properly commit all WAL file
+// changes before closing.
 func (q *QuackCon) Close() {
+	for i, v := range q.parent.ducklings {
+		if v == q {
+			q.parent.removeConn(i)
+			break
+		}
+	}
 	q.parent = nil
 	q.conn.Close()
 }
@@ -239,7 +300,7 @@ func (q *QuackCon) GetObjectsMap() ([]map[string]any, error) {
 	return m, err
 }
 
-// GetTableSchema returns the Arrow scheme of a DuckDB table. Pass nil for catalog and dbSchema
+// GetTableSchema returns the Arrow schema of a DuckDB table. Pass nil for catalog and dbSchema
 // to use the default catalog and database schema.
 func (q *QuackCon) GetTableSchema(ctx context.Context, catalog, dbSchema *string, tableName string) (*arrow.Schema, error) {
 	return q.conn.GetTableSchema(ctx, catalog, dbSchema, tableName)
@@ -257,8 +318,8 @@ func (q *QuackCon) IngestCreateAppend(ctx context.Context, destTable string, rec
 	if rec == nil {
 		return u, fmt.Errorf("nil arrow record")
 	}
-
-	schema, _ := q.conn.GetTableSchema(ctx, nil, nil, destTable)
+	// If schema is non-nil the table is assumed to exist, otherwise table is not found.
+	schema, _ := q.conn.GetTableSchema(ctx, q.catalog, q.dbSchema, destTable)
 
 	stmt, err := q.conn.NewStatement()
 	if err != nil {
