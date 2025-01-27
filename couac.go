@@ -4,6 +4,8 @@ package couac
 import (
 	"context"
 	"fmt"
+	"os"
+	"runtime"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	drivermgr "github.com/apache/arrow-adbc/go/adbc/drivermgr"
@@ -84,7 +86,16 @@ func NewDuck(opts ...Option) (*Quacker, error) {
 		opt(couac)
 	}
 	if couac.driverPath == "" {
-		dPath = "/usr/local/lib/libduckdb.so"
+		switch runtime.GOOS {
+		case "darwin":
+			dPath = "/usr/local/lib/libduckdb.so.dylib"
+		case "linux":
+			dPath = "/usr/local/lib/libduckdb.so"
+		case "windows":
+			h, _ := os.UserHomeDir()
+			dPath = h + "\\Downloads\\libduckdb-windows-amd64\\duckdb.dll"
+		default:
+		}
 	} else {
 		dPath = couac.driverPath
 	}
