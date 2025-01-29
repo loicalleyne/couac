@@ -5,7 +5,7 @@ go 1.23.3
 require (
 	github.com/apache/arrow-adbc/go/adbc v1.4.0
 	github.com/apache/arrow-go/v18 v18.1.1-0.20250116162745-f533d2066dee
-	github.com/goccy/go-json v0.10.4
+	github.com/goccy/go-json v0.10.5
 )
 
 require (
