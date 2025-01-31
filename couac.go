@@ -167,6 +167,9 @@ func (q *Quacker) Close() {
 	q.db.Close()
 }
 
+// Path returns the path to the db file. If empty, the db is in-memory.
+func (q *Quacker) Path() string { return q.path }
+
 func (q *Quacker) removeConn(i int) {
 	if len(q.ducklings) > 0 {
 		q.ducklings[i] = q.ducklings[len(q.ducklings)-1]
