@@ -24,6 +24,9 @@ const (
 	ObjectDepthColumns = ObjectDepthAll
 )
 
+type DuckDatabase = Quacker
+type Connection = QuackCon
+
 // Quacker represents a DuckDB database.
 type Quacker struct {
 	ctx context.Context
@@ -72,6 +75,10 @@ func WithContext(ctx context.Context) Option {
 	return func(cfg config) {
 		cfg.ctx = ctx
 	}
+}
+
+func NewDB(opts ...Option) (*DuckDatabase, error) {
+	return NewDuck(opts...)
 }
 
 // NewDuck opens a DuckDB database. WithPath option provides the location of
@@ -123,7 +130,7 @@ func NewDuck(opts ...Option) (*Quacker, error) {
 // before closing the database.
 func (q *Quacker) NewConnection() (*QuackCon, error) {
 	var err error
-	qc := new(QuackCon)
+	qc := new(Connection)
 	qc.conn, err = q.db.Open(q.ctx)
 	if err != nil {
 		return nil, fmt.Errorf("db open error: %v", err)
