@@ -374,7 +374,10 @@ func (q *QuackCon) IngestCreateAppend(ctx context.Context, destTable string, rec
 		return u, fmt.Errorf("statement binding arrow record error: %v", err)
 	}
 	u, err = stmt.ExecuteUpdate(ctx)
-	return u, err
+	if err != nil {
+		return u, fmt.Errorf("execute update error: %w", err)
+	}
+	return u, nil
 }
 
 // NewStatement initializes a new statement object tied to an open connection.
