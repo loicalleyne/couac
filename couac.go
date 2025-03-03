@@ -88,11 +88,11 @@ func NewDB(opts ...Option) (*DuckDatabase, error) {
 func NewDuck(opts ...Option) (*Quacker, error) {
 	var err error
 	var dPath string
-	couac := new(Quacker)
+	coincoin := new(Quacker)
 	for _, opt := range opts {
-		opt(couac)
+		opt(coincoin)
 	}
-	if couac.driverPath == "" {
+	if coincoin.driverPath == "" {
 		switch runtime.GOOS {
 		case "darwin":
 			dPath = "/usr/local/lib/libduckdb.so.dylib"
@@ -104,25 +104,25 @@ func NewDuck(opts ...Option) (*Quacker, error) {
 		default:
 		}
 	} else {
-		dPath = couac.driverPath
+		dPath = coincoin.driverPath
 	}
-	if couac.ctx == nil {
-		couac.ctx = context.TODO()
+	if coincoin.ctx == nil {
+		coincoin.ctx = context.TODO()
 	}
-	couac.drv = drivermgr.Driver{}
+	coincoin.drv = drivermgr.Driver{}
 	dbOpts := make(map[string]string)
 	// path to duckdb driver file
 	dbOpts["driver"] = dPath
 	dbOpts["entrypoint"] = "duckdb_adbc_init"
 	// if path is empty, defaults to in-memory
-	if couac.path != "" {
-		dbOpts["path"] = couac.path
+	if coincoin.path != "" {
+		dbOpts["path"] = coincoin.path
 	}
-	couac.db, err = couac.drv.NewDatabase(dbOpts)
+	coincoin.db, err = coincoin.drv.NewDatabase(dbOpts)
 	if err != nil {
 		return nil, fmt.Errorf("new database error: %v", err)
 	}
-	return couac, nil
+	return coincoin, nil
 }
 
 // NewConnection returns a new connection to the database. It is best practice to
