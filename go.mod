@@ -1,10 +1,11 @@
 module github.com/loicalleyne/couac
 
 go 1.23.3
+toolchain go1.24.1
 
 require (
 	github.com/apache/arrow-adbc/go/adbc v1.5.0
-	github.com/apache/arrow-go/v18 v18.2.0-rc1
+	github.com/apache/arrow-go/v18 v18.2.0
 	github.com/goccy/go-json v0.10.5
 )
 
