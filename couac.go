@@ -298,12 +298,67 @@ func (q *QuackCon) Exec(ctx context.Context, query string) (int64, error) {
 //	fk_db_schema								| utf8
 //	fk_table										| utf8 not null
 //	fk_column_name							| utf8 not null
-func (q *QuackCon) GetObjectsMap() ([]map[string]any, error) {
+
+// DBObject represents the hierarchical structure of catalogs, schemas, tables, and columns.
+type DBObject struct {
+	CatalogName      string     `json:"catalog_name"`
+	CatalogDBSchemas []DBSchema `json:"catalog_db_schemas"`
+}
+
+type DBSchema struct {
+	DBSchemaName   string        `json:"db_schema_name"`
+	DBSchemaTables []TableSchema `json:"db_schema_tables"`
+}
+
+type TableSchema struct {
+	TableName        string             `json:"table_name"`
+	TableType        string             `json:"table_type"`
+	TableColumns     []ColumnSchema     `json:"table_columns"`
+	TableConstraints []ConstraintSchema `json:"table_constraints"`
+}
+
+type ColumnSchema struct {
+	ColumnName            string `json:"column_name"`
+	OrdinalPosition       int32  `json:"ordinal_position"`
+	Remarks               string `json:"remarks"`
+	XdbcDataType          int16  `json:"xdbc_data_type"`
+	XdbcTypeName          string `json:"xdbc_type_name"`
+	XdbcColumnSize        int32  `json:"xdbc_column_size"`
+	XdbcDecimalDigits     int16  `json:"xdbc_decimal_digits"`
+	XdbcNumPrecRadix      int16  `json:"xdbc_num_prec_radix"`
+	XdbcNullable          int16  `json:"xdbc_nullable"`
+	XdbcColumnDef         string `json:"xdbc_column_def"`
+	XdbcSqlDataType       int16  `json:"xdbc_sql_data_type"`
+	XdbcDatetimeSub       int16  `json:"xdbc_datetime_sub"`
+	XdbcCharOctetLength   int32  `json:"xdbc_char_octet_length"`
+	XdbcIsNullable        string `json:"xdbc_is_nullable"`
+	XdbcScopeCatalog      string `json:"xdbc_scope_catalog"`
+	XdbcScopeSchema       string `json:"xdbc_scope_schema"`
+	XdbcScopeTable        string `json:"xdbc_scope_table"`
+	XdbcIsAutoincrement   bool   `json:"xdbc_is_autoincrement"`
+	XdbcIsGeneratedColumn bool   `json:"xdbc_is_generatedcolumn"`
+}
+
+type ConstraintSchema struct {
+	ConstraintName        string        `json:"constraint_name"`
+	ConstraintType        string        `json:"constraint_type"`
+	ConstraintColumnNames []string      `json:"constraint_column_names"`
+	ConstraintColumnUsage []UsageSchema `json:"constraint_column_usage"`
+}
+
+type UsageSchema struct {
+	FKCatalog    string `json:"fk_catalog"`
+	FKDBSchema   string `json:"fk_db_schema"`
+	FKTable      string `json:"fk_table"`
+	FKColumnName string `json:"fk_column_name"`
+}
+
+func (q *QuackCon) GetObjects() ([]DBObject, error) {
 	rr, err := q.conn.GetObjects(q.parent.ctx, adbc.ObjectDepthAll, nil, nil, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	var m []map[string]any
+	var objects []DBObject
 	for rr.Next() {
 		var ob []byte
 		rec := rr.Record()
@@ -312,13 +367,23 @@ func (q *QuackCon) GetObjectsMap() ([]map[string]any, error) {
 			return nil, err
 		}
 		fmt.Println(string(ob))
-		err = json.Unmarshal(ob, &m)
+		err = json.Unmarshal(ob, &objects)
 		if err != nil {
 			return nil, err
 		}
 		break
 	}
-	return m, err
+	// var tables []string
+	// for _, obj := range objects {
+	// 	for _, name := range obj.CatalogDBSchemas {
+	// 		for _, table := range name.DBSchemaTables {
+	// 			tables = append(tables, table.TableName)
+	// 		}
+	// 	}
+	// }
+	// fmt.Printf("tables: %v\n", tables)
+	// fmt.Printf("objects: %v\n", objects)
+	return objects, err
 }
 
 // GetTableSchema returns the Arrow schema of a DuckDB table. Pass nil for catalog and dbSchema
