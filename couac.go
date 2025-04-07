@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	drivermgr "github.com/apache/arrow-adbc/go/adbc/drivermgr"
@@ -404,9 +405,12 @@ func (q *QuackCon) IngestCreateAppend(ctx context.Context, destTable string, rec
 	if rec == nil {
 		return u, fmt.Errorf("nil arrow record")
 	}
+
 	// If schema is non-nil the table is assumed to exist, otherwise table is not found.
 	schema, _ := q.conn.GetTableSchema(ctx, q.catalog, q.dbSchema, destTable)
-
+	// if schema != nil && schema.String() != rec.Schema().String() {
+	// 	return u, fmt.Errorf("schema mismatch: table %s != record %s", schema.String(), rec.Schema().String())
+	// }
 	stmt, err := q.conn.NewStatement()
 	if err != nil {
 		return u, fmt.Errorf("new statement error: %v", err)
@@ -441,6 +445,115 @@ func (q *QuackCon) IngestCreateAppend(ctx context.Context, destTable string, rec
 	u, err = stmt.ExecuteUpdate(ctx)
 	if err != nil {
 		return u, fmt.Errorf("execute update error: %w", err)
+	}
+	return u, nil
+}
+
+// IngestCreateAppendMerge attempts to ingest an Arrow record into the DuckDB database, creating the table
+// from the record's schema if it does not exist. It returns the number of rows affected if known, otherwise -1.
+// Ingest mode switches between Create and Append since DuckDB does not currently support CreateAppend mode.
+// DuckDB also does not support AutoCommit option.
+func (q *QuackCon) IngestCreateAppendMerge(ctx context.Context, destTable string, rec arrow.Record) (int64, error) {
+	var u int64
+	var schemaMismatch bool
+	var mergeTable = destTable + "mergetmp"
+	if destTable == "" {
+		return u, fmt.Errorf("destination table name error")
+	}
+	if rec == nil {
+		return u, fmt.Errorf("nil arrow record")
+	}
+
+	// Merge and clean up a merge table if it still exists.
+	mergeSchema, _ := q.conn.GetTableSchema(ctx, q.catalog, q.dbSchema, mergeTable)
+	if mergeSchema != nil {
+		mergeQuery := fmt.Sprintf(`CREATE OR REPLACE TABLE %s AS SELECT * FROM %s UNION BY NAME SELECT * FROM %s`, destTable, destTable, mergeTable)
+		_, _ = q.Exec(ctx, mergeQuery)
+		time.Sleep(50 * time.Millisecond)
+		i := 0
+		for mergeSchema, _ := q.conn.GetTableSchema(ctx, q.catalog, q.dbSchema, mergeTable); mergeSchema != nil; {
+			i++
+			dropQuery := fmt.Sprintf(`DROP TABLE %s`, mergeTable)
+			_, _ = q.Exec(ctx, dropQuery)
+			if i > 5 {
+				break
+			}
+		}
+	}
+
+	// If schema is non-nil the table is assumed to exist, otherwise table is not found.
+	schema, _ := q.conn.GetTableSchema(ctx, q.catalog, q.dbSchema, destTable)
+	if schema != nil && schema.String() != rec.Schema().String() {
+		schemaMismatch = true
+
+	}
+	stmt, err := q.conn.NewStatement()
+	if err != nil {
+		return u, fmt.Errorf("new statement error: %v", err)
+	}
+	defer stmt.Close()
+	// If schema is non-nil the table is assumed to exist, Append ingest mode will be used;
+	// otherwise the table will be created with Create ingest mode.
+	if schema == nil || schemaMismatch {
+		err = stmt.SetOption(adbc.OptionKeyIngestMode, adbc.OptionValueIngestModeCreate)
+		if err != nil {
+			return u, fmt.Errorf("set option ingest mode create error: %v", err)
+		}
+	} else {
+		err = stmt.SetOption(adbc.OptionKeyIngestMode, adbc.OptionValueIngestModeAppend)
+		if err != nil {
+			return u, fmt.Errorf("set option ingest mode append error: %v", err)
+		}
+	}
+	// Invalid Argument: Statement Set Option adbc.connection.autocommit is not yet accepted by DuckDB
+	// err = stmt.SetOption(adbc.OptionKeyAutoCommit, adbc.OptionValueEnabled)
+	// if err != nil {
+	// 	return 0, fmt.Errorf("setoption autocommit error: %v", err)
+	// }
+	if schemaMismatch {
+		err = stmt.SetOption(adbc.OptionKeyIngestTargetTable, mergeTable)
+		if err != nil {
+			return u, fmt.Errorf("set option target table error: %v", err)
+		}
+	} else {
+		err = stmt.SetOption(adbc.OptionKeyIngestTargetTable, destTable)
+		if err != nil {
+			return u, fmt.Errorf("set option target table error: %v", err)
+		}
+	}
+	err = stmt.Bind(ctx, rec)
+	if err != nil {
+		return u, fmt.Errorf("statement binding arrow record error: %v", err)
+	}
+	u, err = stmt.ExecuteUpdate(ctx)
+	if err != nil {
+		return u, fmt.Errorf("execute update error: %w", err)
+	}
+	if schemaMismatch {
+		mergeQuery := fmt.Sprintf(`CREATE OR REPLACE TABLE %s AS 
+		SELECT * FROM %s
+		UNION BY NAME
+		SELECT * FROM %s`, destTable, destTable, mergeTable)
+		var err error
+		for _ = range 3 {
+			_, err = q.Exec(context.Background(), mergeQuery)
+			if err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("error merging input data into table %s: %w", destTable, err)
+		}
+		i := 0
+		for mergeSchema, _ := q.conn.GetTableSchema(ctx, q.catalog, q.dbSchema, mergeTable); mergeSchema != nil; {
+			i++
+			dropQuery := fmt.Sprintf(`DROP TABLE %s`, mergeTable)
+			_, _ = q.Exec(ctx, dropQuery)
+			if i > 5 {
+				break
+			}
+		}
 	}
 	return u, nil
 }
