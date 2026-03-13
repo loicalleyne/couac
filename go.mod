@@ -7,7 +7,7 @@ toolchain go1.24.1
 require (
 	github.com/apache/arrow-adbc/go/adbc v1.9.0
 	github.com/apache/arrow-go/v18 v18.4.1
-	github.com/goccy/go-json v0.10.5
+	github.com/goccy/go-json v0.10.6
 )
 
 require (
