@@ -29,7 +29,19 @@ import (
 //	ints := l.Ints()            // []int64{1, 2, 3}
 //	strs := l.Strings()         // []string{"1", "2", "3"}
 //	j, _ := l.MarshalJSON()     // [1,2,3]
-//	jl   := l.JSON()            // List with all elements as JSON strings
+//
+// Typed element access:
+//
+//	n, ok := l.Int32At(0)                  // leaf value
+//	s, ok := l.StringAt(2)                 // leaf value
+//	n, ok  = couac.Elem[int32](l, 0)       // generic (any leaf type)
+//
+// Chaining into nested types — navigation methods return a zero value
+// on failure, so further calls safely return zero/false:
+//
+//	name, ok := outer.StructAt(0).Str("name")    // LIST<STRUCT<…>>
+//	ints     := outer.ListAt(0).Ints()             // LIST<LIST<INT>>
+//	v, ok    := outer.MapAt(0).Int32("key")        // LIST<MAP<…>>
 type List struct {
 	Values []any
 }
@@ -222,7 +234,19 @@ func (nl NullList) Value() (driver.Value, error) {
 //	row.Scan(&s)
 //	fmt.Println(s.Fields["name"]) // "Alice"
 //	j, _ := s.MarshalJSON()       // {"name":"Alice","age":30}
-//	js   := s.JSON()               // Struct with all values as JSON strings
+//
+// Typed field access:
+//
+//	name, ok := s.Str("name")                   // string field
+//	age, ok  := s.Int32("age")                   // int32 field
+//	name, ok  = couac.Field[string](s, "name")   // generic (any leaf type)
+//
+// Chaining into nested types — navigation methods return a zero value
+// on failure, so further calls safely return zero/false:
+//
+//	city, ok := s.Struct("address").Str("city")  // STRUCT field → Struct
+//	vals     := s.List("tags").Ints()              // LIST field → List
+//	v, ok    := s.Map("attrs").Int32("k1")         // MAP field → Map
 type Struct struct {
 	Fields map[string]any
 }
@@ -335,7 +359,19 @@ func (ns NullStruct) Value() (driver.Value, error) {
 //	row.Scan(&m)
 //	fmt.Println(m.Values["key1"]) // 42
 //	j, _ := m.MarshalJSON()       // {"key1":42,"key2":99}
-//	jm   := m.JSON()               // Map with all values as JSON strings
+//
+// Typed value access:
+//
+//	count, ok := m.Int32("key1")                // int32 value
+//	name, ok  := m.Str("key2")                  // string value
+//	count, ok  = couac.Value[int32](m, "key1")  // generic (any leaf type)
+//
+// Chaining into nested types — navigation methods return a zero value
+// on failure, so further calls safely return zero/false:
+//
+//	age, ok := m.Struct("alice").Int32("age")   // STRUCT value → Struct
+//	nums    := m.List("nums").Ints()              // LIST value → List
+//	v, ok   := m.Map("sub").Str("key")            // MAP value → Map
 type Map struct {
 	Values map[string]any
 }
@@ -461,6 +497,233 @@ var (
 	_ sql.Scanner    = (*NullMap)(nil)
 	_ driver.Valuer  = NullMap{}
 )
+
+// ---- Generic typed accessors ----
+
+// Field returns the value of a [Struct] field as type T. If the field
+// does not exist, is nil, or cannot be converted to T, the zero value
+// and false are returned.
+//
+// For leaf types (int32, string, bool, etc.) a direct type assertion is
+// used. For nested types ([List], [Struct], [Map]) the raw value
+// ([]any or map[string]any) is automatically passed through Scan, so
+// the full wrapper API is available on the result.
+//
+// Example:
+//
+//	name, ok := couac.Field[string](s, "name")
+//	age, ok  := couac.Field[int32](s, "age")
+//	addr, ok := couac.Field[couac.Struct](s, "address") // auto-Scans map[string]any
+//	tags, ok := couac.Field[couac.List](s, "tags")       // auto-Scans []any
+func Field[T any](s Struct, name string) (T, bool) {
+	raw, ok := s.Fields[name]
+	if !ok || raw == nil {
+		var zero T
+		return zero, false
+	}
+	return convert[T](raw)
+}
+
+// Value returns the value for a [Map] key as type T. If the key does
+// not exist, is nil, or cannot be converted to T, the zero value and
+// false are returned. The same Scan-fallback logic as [Field] applies
+// for nested types.
+//
+// Example:
+//
+//	count, ok := couac.Value[int32](m, "key1")
+//	inner, ok := couac.Value[couac.Struct](m, "alice") // auto-Scans
+func Value[T any](m Map, key string) (T, bool) {
+	raw, ok := m.Values[key]
+	if !ok || raw == nil {
+		var zero T
+		return zero, false
+	}
+	return convert[T](raw)
+}
+
+// Elem returns the element at index i from a [List] as type T. If the
+// index is out of range, the element is nil, or it cannot be converted
+// to T, the zero value and false are returned. The same Scan-fallback
+// logic as [Field] applies for nested types.
+//
+// Example:
+//
+//	n, ok := couac.Elem[int32](l, 0)
+//	inner, ok := couac.Elem[couac.Struct](l, 0) // auto-Scans
+func Elem[T any](l List, index int) (T, bool) {
+	if index < 0 || index >= len(l.Values) {
+		var zero T
+		return zero, false
+	}
+	raw := l.Values[index]
+	if raw == nil {
+		var zero T
+		return zero, false
+	}
+	return convert[T](raw)
+}
+
+// convert attempts to produce a T from a raw value. It first tries a
+// direct type assertion. If that fails and *T implements [sql.Scanner]
+// (as [List], [Struct], and [Map] do), it calls Scan to perform the
+// conversion (e.g. map[string]any → Struct).
+func convert[T any](raw any) (T, bool) {
+	// Fast path: direct type assertion.
+	if v, ok := raw.(T); ok {
+		return v, true
+	}
+	// Slow path: try Scan for nested types (List, Struct, Map).
+	var zero T
+	if scanner, ok := any(&zero).(sql.Scanner); ok {
+		if err := scanner.Scan(raw); err == nil {
+			return zero, true
+		}
+	}
+	return zero, false
+}
+
+// ---- Navigation convenience methods ----
+
+// Struct returns the named field as a [Struct], enabling chaining.
+// Returns a zero [Struct] if the field is missing, nil, or not a struct;
+// further calls on the zero value safely return zero/false.
+func (s Struct) Struct(name string) Struct {
+	v, _ := Field[Struct](s, name)
+	return v
+}
+
+// List returns the named field as a [List], enabling chaining.
+// Returns a zero [List] if the field is missing, nil, or not a list;
+// further calls on the zero value safely return zero/false.
+func (s Struct) List(name string) List {
+	v, _ := Field[List](s, name)
+	return v
+}
+
+// Map returns the named field as a [Map], enabling chaining.
+// Returns a zero [Map] if the field is missing, nil, or not a map;
+// further calls on the zero value safely return zero/false.
+func (s Struct) Map(name string) Map {
+	v, _ := Field[Map](s, name)
+	return v
+}
+
+// Struct returns the value for key as a [Struct], enabling chaining.
+// Returns a zero [Struct] if the key is missing, nil, or not a struct;
+// further calls on the zero value safely return zero/false.
+func (m Map) Struct(key string) Struct {
+	v, _ := Value[Struct](m, key)
+	return v
+}
+
+// List returns the value for key as a [List], enabling chaining.
+// Returns a zero [List] if the key is missing, nil, or not a list;
+// further calls on the zero value safely return zero/false.
+func (m Map) List(key string) List {
+	v, _ := Value[List](m, key)
+	return v
+}
+
+// Map returns the value for key as a [Map], enabling chaining.
+// Returns a zero [Map] if the key is missing, nil, or not a map;
+// further calls on the zero value safely return zero/false.
+func (m Map) Map(key string) Map {
+	v, _ := Value[Map](m, key)
+	return v
+}
+
+// StructAt returns the element at index i as a [Struct], enabling chaining.
+// Returns a zero [Struct] if i is out of range, nil, or not a struct;
+// further calls on the zero value safely return zero/false.
+func (l List) StructAt(i int) Struct {
+	v, _ := Elem[Struct](l, i)
+	return v
+}
+
+// ListAt returns the element at index i as a [List], enabling chaining.
+// Returns a zero [List] if i is out of range, nil, or not a list;
+// further calls on the zero value safely return zero/false.
+func (l List) ListAt(i int) List {
+	v, _ := Elem[List](l, i)
+	return v
+}
+
+// MapAt returns the element at index i as a [Map], enabling chaining.
+// Returns a zero [Map] if i is out of range, nil, or not a map;
+// further calls on the zero value safely return zero/false.
+func (l List) MapAt(i int) Map {
+	v, _ := Elem[Map](l, i)
+	return v
+}
+
+// ---- Typed leaf accessors (Struct) ----
+
+// Int32 returns the named field as int32.
+// Returns (0, false) if the field is missing, nil, or not int32.
+func (s Struct) Int32(name string) (int32, bool) { return Field[int32](s, name) }
+
+// Int64 returns the named field as int64.
+// Returns (0, false) if the field is missing, nil, or not int64.
+func (s Struct) Int64(name string) (int64, bool) { return Field[int64](s, name) }
+
+// Float64 returns the named field as float64.
+// Returns (0, false) if the field is missing, nil, or not float64.
+func (s Struct) Float64(name string) (float64, bool) { return Field[float64](s, name) }
+
+// Bool returns the named field as bool.
+// Returns (false, false) if the field is missing, nil, or not bool.
+func (s Struct) Bool(name string) (bool, bool) { return Field[bool](s, name) }
+
+// Str returns the named field as string.
+// Returns ("", false) if the field is missing, nil, or not a string.
+// (Named Str to avoid collision with the String() string method.)
+func (s Struct) Str(name string) (string, bool) { return Field[string](s, name) }
+
+// ---- Typed leaf accessors (Map) ----
+
+// Int32 returns the value for key as int32.
+// Returns (0, false) if the key is missing, nil, or not int32.
+func (m Map) Int32(key string) (int32, bool) { return Value[int32](m, key) }
+
+// Int64 returns the value for key as int64.
+// Returns (0, false) if the key is missing, nil, or not int64.
+func (m Map) Int64(key string) (int64, bool) { return Value[int64](m, key) }
+
+// Float64 returns the value for key as float64.
+// Returns (0, false) if the key is missing, nil, or not float64.
+func (m Map) Float64(key string) (float64, bool) { return Value[float64](m, key) }
+
+// Bool returns the value for key as bool.
+// Returns (false, false) if the key is missing, nil, or not bool.
+func (m Map) Bool(key string) (bool, bool) { return Value[bool](m, key) }
+
+// Str returns the value for key as string.
+// Returns ("", false) if the key is missing, nil, or not a string.
+// (Named Str to avoid collision with the String() string method.)
+func (m Map) Str(key string) (string, bool) { return Value[string](m, key) }
+
+// ---- Typed leaf accessors (List) ----
+
+// Int32At returns the element at index i as int32.
+// Returns (0, false) if i is out of range, nil, or not int32.
+func (l List) Int32At(i int) (int32, bool) { return Elem[int32](l, i) }
+
+// Int64At returns the element at index i as int64.
+// Returns (0, false) if i is out of range, nil, or not int64.
+func (l List) Int64At(i int) (int64, bool) { return Elem[int64](l, i) }
+
+// Float64At returns the element at index i as float64.
+// Returns (0, false) if i is out of range, nil, or not float64.
+func (l List) Float64At(i int) (float64, bool) { return Elem[float64](l, i) }
+
+// BoolAt returns the element at index i as bool.
+// Returns (false, false) if i is out of range, nil, or not bool.
+func (l List) BoolAt(i int) (bool, bool) { return Elem[bool](l, i) }
+
+// StringAt returns the element at index i as string.
+// Returns ("", false) if i is out of range, nil, or not a string.
+func (l List) StringAt(i int) (string, bool) { return Elem[string](l, i) }
 
 // ---- Arrow-to-Go recursive walker ----
 

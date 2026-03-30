@@ -1136,3 +1136,177 @@ func ExampleNullList() {
 	// valid: true
 	// valid: false
 }
+
+// ExampleList_nested demonstrates scanning a LIST of LIST (nested list)
+// and using Scan to navigate into inner lists with convenience accessors.
+func ExampleList_nested() {
+	db, err := couac.NewDuck()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer db.Close()
+
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var outer couac.List
+	err = stdDB.QueryRowContext(ctx, "SELECT [[1, 2], [3, 4, 5]]::INTEGER[][]").Scan(&outer)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	fmt.Println("outer length:", len(outer.Values))
+
+	// Chain ListAt directly into Ints — no intermediate variables
+	fmt.Println("inner[0] ints:", outer.ListAt(0).Ints())
+	fmt.Println("inner[1] ints:", outer.ListAt(1).Ints())
+	// Output:
+	// outer length: 2
+	// inner[0] ints: [1 2]
+	// inner[1] ints: [3 4 5]
+}
+
+// ExampleStruct_nested demonstrates chaining into a nested STRUCT:
+// Struct("field") returns a Struct you can immediately call Str/Int32/etc on.
+func ExampleStruct_nested() {
+	db, err := couac.NewDuck()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer db.Close()
+
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var s couac.Struct
+	err = stdDB.QueryRowContext(ctx,
+		"SELECT {'name': 'Alice', 'address': {'city': 'Montreal', 'zip': '12345'}}::"+
+			"STRUCT(name VARCHAR, address STRUCT(city VARCHAR, zip VARCHAR))",
+	).Scan(&s)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	name, _ := s.Str("name")
+	fmt.Println("name:", name)
+
+	// Chain: Struct → Struct → Str
+	city, _ := s.Struct("address").Str("city")
+	zip, _ := s.Struct("address").Str("zip")
+	fmt.Println("city:", city)
+	fmt.Println("zip:", zip)
+	// Output:
+	// name: Alice
+	// city: Montreal
+	// zip: 12345
+}
+
+// ExampleList_nestedStructWithList demonstrates depth-3 chaining:
+// StructAt → Str / List → Ints in a single expression.
+func ExampleList_nestedStructWithList() {
+	db, err := couac.NewDuck()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer db.Close()
+
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var outer couac.List
+	err = stdDB.QueryRowContext(ctx,
+		"SELECT [{'name': 'a', 'vals': [1, 2]}, {'name': 'b', 'vals': [3]}]::"+
+			"STRUCT(name VARCHAR, vals INTEGER[])[]",
+	).Scan(&outer)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	for i := range outer.Values {
+		name, _ := outer.StructAt(i).Str("name")
+		vals := outer.StructAt(i).List("vals").Ints()
+		fmt.Printf("elem[%d]: name=%s vals=%v\n", i, name, vals)
+	}
+	// Output:
+	// elem[0]: name=a vals=[1 2]
+	// elem[1]: name=b vals=[3]
+}
+
+// ExampleMap_nestedStructValues demonstrates chaining into MAP values
+// that are STRUCTs: Struct("key") → Int32("field").
+func ExampleMap_nestedStructValues() {
+	db, err := couac.NewDuck()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer db.Close()
+
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var m couac.Map
+	err = stdDB.QueryRowContext(ctx,
+		"SELECT MAP {'alice': {'age': 30}, 'bob': {'age': 25}}::"+
+			"MAP(VARCHAR, STRUCT(age INTEGER))",
+	).Scan(&m)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	// Chain: Map → Struct → Int32
+	age, _ := m.Struct("alice").Int32("age")
+	fmt.Println("alice age:", age)
+
+	bobAge, _ := m.Struct("bob").Int32("age")
+	fmt.Println("bob age:", bobAge)
+	// Output:
+	// alice age: 30
+	// bob age: 25
+}
+
+// ExampleList_nullElements demonstrates that NULL elements inside a LIST
+// are detected by the ok return from Int32At.
+func ExampleList_nullElements() {
+	db, err := couac.NewDuck()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer db.Close()
+
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var l couac.List
+	err = stdDB.QueryRowContext(ctx, "SELECT [1, NULL, 3]::INTEGER[]").Scan(&l)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	for i := range l.Values {
+		v, ok := l.Int32At(i)
+		if ok {
+			fmt.Printf("[%d] = %d\n", i, v)
+		} else {
+			fmt.Printf("[%d] = NULL\n", i)
+		}
+	}
+	// Output:
+	// [0] = 1
+	// [1] = NULL
+	// [2] = 3
+}

@@ -1413,3 +1413,826 @@ func TestStdDB_Param_NullListAsNULL(t *testing.T) {
 		t.Error("expected NullList{Valid:false} to bind as NULL")
 	}
 }
+
+// --------------- Deep nesting (depth ≥ 2) with chaining ---------------
+
+func TestStdDB_ListOfList(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var outer couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [[1, 2], [3, 4, 5]]::INTEGER[][]",
+	).Scan(&outer); err != nil {
+		t.Fatal(err)
+	}
+	if len(outer.Values) != 2 {
+		t.Fatalf("expected 2 outer elements, got %d", len(outer.Values))
+	}
+
+	ints0 := outer.ListAt(0).Ints()
+	if len(ints0) != 2 || ints0[0] != 1 || ints0[1] != 2 {
+		t.Errorf("inner[0]: expected [1, 2], got %v", ints0)
+	}
+
+	ints1 := outer.ListAt(1).Ints()
+	if len(ints1) != 3 || ints1[0] != 3 || ints1[1] != 4 || ints1[2] != 5 {
+		t.Errorf("inner[1]: expected [3, 4, 5], got %v", ints1)
+	}
+}
+
+func TestStdDB_StructOfStruct(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var s couac.Struct
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT {'name': 'Alice', 'address': {'city': 'Montreal', 'zip': '12345'}}::"+
+			"STRUCT(name VARCHAR, address STRUCT(city VARCHAR, zip VARCHAR))",
+	).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	name, ok := s.Str("name")
+	if !ok || name != "Alice" {
+		t.Errorf("name: expected Alice, got %v", name)
+	}
+
+	// Chain into nested struct
+	city, ok := s.Struct("address").Str("city")
+	if !ok || city != "Montreal" {
+		t.Errorf("city: expected Montreal, got %v", city)
+	}
+	zip, ok := s.Struct("address").Str("zip")
+	if !ok || zip != "12345" {
+		t.Errorf("zip: expected 12345, got %v", zip)
+	}
+}
+
+func TestStdDB_StructContainingMap(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var s couac.Struct
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT {'label': 'test', 'attrs': MAP {'k1': 10, 'k2': 20}}::"+
+			"STRUCT(label VARCHAR, attrs MAP(VARCHAR, INTEGER))",
+	).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	label, _ := s.Str("label")
+	if label != "test" {
+		t.Errorf("label: expected test, got %v", label)
+	}
+
+	// Chain: Struct → Map → Int32
+	k1, ok := s.Map("attrs").Int32("k1")
+	if !ok || k1 != 10 {
+		t.Errorf("k1: expected 10, got %v", k1)
+	}
+	k2, ok := s.Map("attrs").Int32("k2")
+	if !ok || k2 != 20 {
+		t.Errorf("k2: expected 20, got %v", k2)
+	}
+}
+
+func TestStdDB_MapWithNestedStructValues(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var m couac.Map
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT MAP {'alice': {'age': 30, 'active': true}, 'bob': {'age': 25, 'active': false}}::"+
+			"MAP(VARCHAR, STRUCT(age INTEGER, active BOOLEAN))",
+	).Scan(&m); err != nil {
+		t.Fatal(err)
+	}
+
+	// Chain: Map → Struct → Int32/Bool
+	age, ok := m.Struct("alice").Int32("age")
+	if !ok || age != 30 {
+		t.Errorf("alice.age: expected 30, got %v", age)
+	}
+	active, ok := m.Struct("alice").Bool("active")
+	if !ok || active != true {
+		t.Errorf("alice.active: expected true, got %v", active)
+	}
+	bobAge, ok := m.Struct("bob").Int32("age")
+	if !ok || bobAge != 25 {
+		t.Errorf("bob.age: expected 25, got %v", bobAge)
+	}
+}
+
+func TestStdDB_MapWithNestedListValues(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var m couac.Map
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT MAP {'x': [1, 2], 'y': [3, 4, 5]}::MAP(VARCHAR, INTEGER[])",
+	).Scan(&m); err != nil {
+		t.Fatal(err)
+	}
+
+	// Chain: Map → List → Ints
+	xInts := m.List("x").Ints()
+	if len(xInts) != 2 || xInts[0] != 1 || xInts[1] != 2 {
+		t.Errorf("x: expected [1, 2], got %v", xInts)
+	}
+	if len(m.List("y").Ints()) != 3 {
+		t.Errorf("y: expected 3 elements, got %d", len(m.List("y").Ints()))
+	}
+}
+
+func TestStdDB_ListOfMap(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var l couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [MAP {'a': 1}, MAP {'b': 2}]::MAP(VARCHAR, INTEGER)[]",
+	).Scan(&l); err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Values) != 2 {
+		t.Fatalf("expected 2 elements, got %d", len(l.Values))
+	}
+
+	// Chain: List → Map → Int32
+	a, ok := l.MapAt(0).Int32("a")
+	if !ok || a != 1 {
+		t.Errorf("m0.a: expected 1, got %v", a)
+	}
+	b, ok := l.MapAt(1).Int32("b")
+	if !ok || b != 2 {
+		t.Errorf("m1.b: expected 2, got %v", b)
+	}
+}
+
+func TestStdDB_ListOfStructContainingList(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	// Depth-3: LIST< STRUCT< ..., LIST<INT> > >
+	var outer couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [{'name': 'a', 'vals': [1, 2]}, {'name': 'b', 'vals': [3]}]::"+
+			"STRUCT(name VARCHAR, vals INTEGER[])[]",
+	).Scan(&outer); err != nil {
+		t.Fatal(err)
+	}
+	if len(outer.Values) != 2 {
+		t.Fatalf("expected 2 elements, got %d", len(outer.Values))
+	}
+
+	// Chain: List → Struct → Str / List → Ints
+	name0, ok := outer.StructAt(0).Str("name")
+	if !ok || name0 != "a" {
+		t.Errorf("elem0.name: expected a, got %v", name0)
+	}
+	ints0 := outer.StructAt(0).List("vals").Ints()
+	if len(ints0) != 2 || ints0[0] != 1 || ints0[1] != 2 {
+		t.Errorf("elem0.vals: expected [1, 2], got %v", ints0)
+	}
+
+	ints1 := outer.StructAt(1).List("vals").Ints()
+	if len(ints1) != 1 || ints1[0] != 3 {
+		t.Errorf("elem1.vals: expected [3], got %v", ints1)
+	}
+}
+
+func TestStdDB_StructOfStructOfList(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	// Depth-3: STRUCT< ..., STRUCT< ..., LIST<INT> > >
+	var s couac.Struct
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT {'id': 1, 'child': {'label': 'deep', 'nums': [10, 20]}}::"+
+			"STRUCT(id INTEGER, child STRUCT(label VARCHAR, nums INTEGER[]))",
+	).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := s.Int32("id")
+	if id != 1 {
+		t.Errorf("id: expected 1, got %v", id)
+	}
+
+	// Chain: Struct → Struct → Str / List → Ints
+	label, _ := s.Struct("child").Str("label")
+	if label != "deep" {
+		t.Errorf("child.label: expected deep, got %v", label)
+	}
+	intNums := s.Struct("child").List("nums").Ints()
+	if len(intNums) != 2 || intNums[0] != 10 || intNums[1] != 20 {
+		t.Errorf("child.nums: expected [10, 20], got %v", intNums)
+	}
+}
+
+// --------------- Null values within nested children ---------------
+
+func TestStdDB_ListWithNullElements(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var l couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [1, NULL, 3]::INTEGER[]",
+	).Scan(&l); err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Values) != 3 {
+		t.Fatalf("expected 3 elements, got %d", len(l.Values))
+	}
+	v0, ok := l.Int32At(0)
+	if !ok || v0 != 1 {
+		t.Errorf("element 0: expected 1, got %v (ok=%v)", v0, ok)
+	}
+	// NULL element
+	_, ok = l.Int32At(1)
+	if ok {
+		t.Errorf("element 1: expected ok=false for NULL")
+	}
+	v2, ok := l.Int32At(2)
+	if !ok || v2 != 3 {
+		t.Errorf("element 2: expected 3, got %v (ok=%v)", v2, ok)
+	}
+}
+
+func TestStdDB_StructWithNullField(t *testing.T) {
+	db := newTestDB(t)
+	conn, err := db.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	_, err = conn.Exec(ctx, `CREATE TABLE sqldb_struct_nullfield (
+		data STRUCT(name VARCHAR, score INTEGER))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(ctx, "INSERT INTO sqldb_struct_nullfield VALUES ({'name': 'Alice', 'score': NULL})")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+
+	var s couac.Struct
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT data FROM sqldb_struct_nullfield",
+	).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	name, ok := s.Str("name")
+	if !ok || name != "Alice" {
+		t.Errorf("name: expected Alice, got %v", name)
+	}
+	// NULL field
+	_, ok = s.Int32("score")
+	if ok {
+		t.Errorf("score: expected ok=false for NULL field")
+	}
+}
+
+func TestStdDB_ListOfStructWithNullFields(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var l couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [{'a': 1, 'b': 'x'}, {'a': NULL, 'b': 'y'}]::STRUCT(a INTEGER, b VARCHAR)[]",
+	).Scan(&l); err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Values) != 2 {
+		t.Fatalf("expected 2 elements, got %d", len(l.Values))
+	}
+
+	// Chain: List → Struct → Int32
+	a0, _ := l.StructAt(0).Int32("a")
+	if a0 != 1 {
+		t.Errorf("s0.a: expected 1, got %v", a0)
+	}
+
+	_, ok := l.StructAt(1).Int32("a")
+	if ok {
+		t.Errorf("s1.a: expected ok=false for NULL field")
+	}
+	b1, _ := l.StructAt(1).Str("b")
+	if b1 != "y" {
+		t.Errorf("s1.b: expected y, got %v", b1)
+	}
+}
+
+func TestStdDB_StructWithNullNestedStruct(t *testing.T) {
+	db := newTestDB(t)
+	conn, err := db.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	_, err = conn.Exec(ctx, `CREATE TABLE sqldb_null_child (
+		data STRUCT(name VARCHAR, child STRUCT(x INTEGER, y INTEGER)))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(ctx, "INSERT INTO sqldb_null_child VALUES ({'name': 'test', 'child': NULL})")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+
+	var s couac.Struct
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT data FROM sqldb_null_child",
+	).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := s.Str("name")
+	if name != "test" {
+		t.Errorf("name: expected test, got %v", name)
+	}
+
+	// NULL nested struct: chaining through it yields zero/false
+	_, ok := s.Struct("child").Int32("x")
+	if ok {
+		t.Errorf("child.x: expected ok=false for NULL nested struct chain")
+	}
+}
+
+func TestStdDB_StructWithNullNestedList(t *testing.T) {
+	db := newTestDB(t)
+	conn, err := db.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	_, err = conn.Exec(ctx, `CREATE TABLE sqldb_null_list_field (
+		data STRUCT(label VARCHAR, tags VARCHAR[]))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(ctx, "INSERT INTO sqldb_null_list_field VALUES ({'label': 'ok', 'tags': NULL})")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+
+	var s couac.Struct
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT data FROM sqldb_null_list_field",
+	).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	label, _ := s.Str("label")
+	if label != "ok" {
+		t.Errorf("label: expected ok, got %v", label)
+	}
+
+	// NULL nested list: chaining through it yields empty slice
+	tags := s.List("tags").Strings()
+	if len(tags) != 0 {
+		t.Errorf("tags: expected empty, got %v", tags)
+	}
+}
+
+func TestStdDB_ListOfListWithNulls(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var outer couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [[1, NULL], NULL, [3]]::INTEGER[][]",
+	).Scan(&outer); err != nil {
+		t.Fatal(err)
+	}
+	if len(outer.Values) != 3 {
+		t.Fatalf("expected 3 outer elements, got %d", len(outer.Values))
+	}
+
+	// First inner list: [1, NULL]
+	inner0 := outer.ListAt(0)
+	if len(inner0.Values) != 2 || inner0.Values[0].(int32) != 1 || inner0.Values[1] != nil {
+		t.Errorf("inner0: expected [1, nil], got %v", inner0.Values)
+	}
+
+	// Second element: NULL — chaining through yields empty
+	nullInts := outer.ListAt(1).Ints()
+	if len(nullInts) != 0 {
+		t.Errorf("ListAt(1): expected empty ints from NULL, got %v", nullInts)
+	}
+
+	// Third inner list: [3]
+	ints2 := outer.ListAt(2).Ints()
+	if len(ints2) != 1 || ints2[0] != 3 {
+		t.Errorf("inner2: expected [3], got %v", ints2)
+	}
+}
+
+func TestStdDB_MapWithNullValues(t *testing.T) {
+	db := newTestDB(t)
+	conn, err := db.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	_, err = conn.Exec(ctx, `CREATE TABLE sqldb_map_nullvals (data MAP(VARCHAR, INTEGER))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(ctx, "INSERT INTO sqldb_map_nullvals VALUES (MAP {'a': 1, 'b': NULL})")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+
+	var m couac.Map
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT data FROM sqldb_map_nullvals",
+	).Scan(&m); err != nil {
+		t.Fatal(err)
+	}
+	a, ok := m.Int32("a")
+	if !ok || a != 1 {
+		t.Errorf("a: expected 1, got %v (ok=%v)", a, ok)
+	}
+	_, ok = m.Int32("b")
+	if ok {
+		t.Errorf("b: expected ok=false for NULL value")
+	}
+}
+
+func TestStdDB_DeepNesting_JSON_MarshalRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	// Depth-3: LIST< STRUCT< name, child STRUCT< ..., LIST > > >
+	var l couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [{'name': 'root', 'child': {'tag': 'deep', 'ids': [100, 200]}}]::"+
+			"STRUCT(name VARCHAR, child STRUCT(tag VARCHAR, ids INTEGER[]))[]",
+	).Scan(&l); err != nil {
+		t.Fatal(err)
+	}
+
+	// Full chain: List → Struct → Struct → List → Ints
+	intIDs := l.StructAt(0).Struct("child").List("ids").Ints()
+	if len(intIDs) != 2 || intIDs[0] != 100 || intIDs[1] != 200 {
+		t.Errorf("ids: expected [100, 200], got %v", intIDs)
+	}
+
+	// MarshalJSON round-trip
+	b, err := l.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+	var l2 couac.List
+	if err := l2.Scan(string(b)); err != nil {
+		t.Fatalf("JSON round-trip Scan failed: %v", err)
+	}
+	if len(l2.Values) != 1 {
+		t.Errorf("round-trip: expected 1 element, got %d", len(l2.Values))
+	}
+}
+
+// --------------- 6-level deep nesting tests ---------------
+
+// TestStdDB_Depth6_ListOfListOfList tests 6 levels of nested LIST:
+// INTEGER[][][][][][]
+func TestStdDB_Depth6_ListOfListOfList(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var l1 couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [[[[[[42]]]]]]::INTEGER[][][][][][]",
+	).Scan(&l1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Chain ListAt all the way down
+	ints := l1.ListAt(0).ListAt(0).ListAt(0).ListAt(0).ListAt(0).Ints()
+	if len(ints) != 1 || ints[0] != 42 {
+		t.Errorf("leaf: expected [42], got %v", ints)
+	}
+}
+
+// TestStdDB_Depth6_NestedStructs tests 6 levels of nested STRUCT.
+func TestStdDB_Depth6_NestedStructs(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var s1 couac.Struct
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT {'v': 1, 'c': {'v': 2, 'c': {'v': 3, 'c': {'v': 4, 'c': {'v': 5, 'c': {'v': 6}}}}}}::"+
+			"STRUCT(v INTEGER, c STRUCT(v INTEGER, c STRUCT(v INTEGER, c STRUCT(v INTEGER, c STRUCT(v INTEGER, c STRUCT(v INTEGER))))))",
+	).Scan(&s1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Walk 6 levels with chaining
+	current := s1
+	for level := int32(1); level <= 6; level++ {
+		v, ok := current.Int32("v")
+		if !ok || v != level {
+			t.Errorf("level %d: expected v=%d, got %v (ok=%v)", level, level, v, ok)
+		}
+		if level < 6 {
+			current = current.Struct("c")
+		}
+	}
+}
+
+// TestStdDB_Depth6_MixedNesting tests 6 levels with alternating types:
+// LIST< STRUCT< list: LIST< MAP< key, STRUCT< val: LIST<INT> > > > > >
+func TestStdDB_Depth6_MixedNesting(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var l1 couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [{'label': 'top', 'items': [MAP {'k': {'val': [7, 8, 9]}}]}]::"+
+			"STRUCT(label VARCHAR, items MAP(VARCHAR, STRUCT(val INTEGER[]))[])[]",
+	).Scan(&l1); err != nil {
+		t.Fatal(err)
+	}
+
+	label, ok := l1.StructAt(0).Str("label")
+	if !ok || label != "top" {
+		t.Errorf("label: expected top, got %v", label)
+	}
+
+	// Full chain: List → Struct → List → Map → Struct → List → Ints
+	ints := l1.StructAt(0).List("items").MapAt(0).Struct("k").List("val").Ints()
+	if len(ints) != 3 || ints[0] != 7 || ints[1] != 8 || ints[2] != 9 {
+		t.Errorf("leaf: expected [7, 8, 9], got %v", ints)
+	}
+}
+
+// TestStdDB_Depth6_NullsAtEveryLevel tests NULL propagation through 6
+// levels of struct nesting — chaining through NULL yields zero/false.
+func TestStdDB_Depth6_NullsAtEveryLevel(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var s1 couac.Struct
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT {'v': 1, 'c': {'v': 2, 'c': {'v': 3, 'c': {'v': 4, 'c': {'v': 5, 'c': NULL}}}}}::"+
+			"STRUCT(v INTEGER, c STRUCT(v INTEGER, c STRUCT(v INTEGER, c STRUCT(v INTEGER, c STRUCT(v INTEGER, c STRUCT(v INTEGER))))))",
+	).Scan(&s1); err != nil {
+		t.Fatal(err)
+	}
+
+	current := s1
+	for level := int32(1); level <= 5; level++ {
+		v, ok := current.Int32("v")
+		if !ok || v != level {
+			t.Errorf("level %d: expected v=%d, got %v", level, level, v)
+		}
+		current = current.Struct("c")
+	}
+	// Level 6 is NULL — further chaining yields false
+	_, ok := current.Int32("v")
+	if ok {
+		t.Errorf("level 6: expected ok=false for NULL struct chain")
+	}
+}
+
+// TestStdDB_Depth6_ListWithNullsAtMultipleLevels tests a 4-level nested
+// list with NULL values interspersed at different levels.
+func TestStdDB_Depth6_ListWithNullsAtMultipleLevels(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var l1 couac.List
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT [[[[1, NULL]], NULL], NULL]::INTEGER[][][][]",
+	).Scan(&l1); err != nil {
+		t.Fatal(err)
+	}
+	if len(l1.Values) != 2 {
+		t.Fatalf("l1: expected 2 elements, got %d", len(l1.Values))
+	}
+
+	// l1[1] is NULL — chaining yields empty
+	nullInts := l1.ListAt(1).Ints()
+	if len(nullInts) != 0 {
+		t.Errorf("l1[1]: expected empty from NULL, got %v", nullInts)
+	}
+
+	// l1[0] → l2
+	l2 := l1.ListAt(0)
+	if len(l2.Values) != 2 {
+		t.Fatalf("l2: expected 2 elements, got %d", len(l2.Values))
+	}
+
+	// l2[1] is NULL
+	nullInts = l2.ListAt(1).Ints()
+	if len(nullInts) != 0 {
+		t.Errorf("l2[1]: expected empty from NULL, got %v", nullInts)
+	}
+
+	// Chain through to leaf: l2[0] → l3[0] → l4 = [1, NULL]
+	l4 := l2.ListAt(0).ListAt(0)
+	if len(l4.Values) != 2 {
+		t.Fatalf("l4: expected 2 elements, got %d", len(l4.Values))
+	}
+	v0, ok := l4.Int32At(0)
+	if !ok || v0 != 1 {
+		t.Errorf("l4[0]: expected 1, got %v", v0)
+	}
+	_, ok = l4.Int32At(1)
+	if ok {
+		t.Errorf("l4[1]: expected ok=false for NULL")
+	}
+}
+
+// TestStdDB_Depth6_MapNestedInListInStructInMap tests: MAP→STRUCT→LIST→MAP.
+func TestStdDB_Depth6_MapNestedInListInStructInMap(t *testing.T) {
+	db := newTestDB(t)
+	stdDB := db.StdDB()
+	defer stdDB.Close()
+	ctx := context.Background()
+
+	var m1 couac.Map
+	if err := stdDB.QueryRowContext(ctx,
+		"SELECT MAP {'root': {'tag': 'x', 'entries': [MAP {'a': 1, 'b': 2}]}}::"+
+			"MAP(VARCHAR, STRUCT(tag VARCHAR, entries MAP(VARCHAR, INTEGER)[]))",
+	).Scan(&m1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Chain: Map → Struct → Str
+	tag, _ := m1.Struct("root").Str("tag")
+	if tag != "x" {
+		t.Errorf("tag: expected x, got %v", tag)
+	}
+
+	// Chain: Map → Struct → List → Map → Int32
+	aVal, _ := m1.Struct("root").List("entries").MapAt(0).Int32("a")
+	bVal, _ := m1.Struct("root").List("entries").MapAt(0).Int32("b")
+	if aVal != 1 {
+		t.Errorf("a: expected 1, got %v", aVal)
+	}
+	if bVal != 2 {
+		t.Errorf("b: expected 2, got %v", bVal)
+	}
+}
+
+// TestStdDB_Depth6_ScanNilPreservesZeroValue ensures that calling Scan(nil)
+// on each wrapper type consistently zeroes it.
+func TestStdDB_Depth6_ScanNilPreservesZeroValue(t *testing.T) {
+	var l couac.List
+	l.Values = []any{1, 2, 3}
+	if err := l.Scan(nil); err != nil {
+		t.Fatalf("List.Scan(nil): %v", err)
+	}
+	if l.Values != nil {
+		t.Errorf("List.Scan(nil): expected nil Values, got %v", l.Values)
+	}
+
+	var s couac.Struct
+	s.Fields = map[string]any{"x": 1}
+	if err := s.Scan(nil); err != nil {
+		t.Fatalf("Struct.Scan(nil): %v", err)
+	}
+	if s.Fields != nil {
+		t.Errorf("Struct.Scan(nil): expected nil Fields, got %v", s.Fields)
+	}
+
+	var m couac.Map
+	m.Values = map[string]any{"k": 1}
+	if err := m.Scan(nil); err != nil {
+		t.Fatalf("Map.Scan(nil): %v", err)
+	}
+	if m.Values != nil {
+		t.Errorf("Map.Scan(nil): expected nil Values, got %v", m.Values)
+	}
+}
+
+// TestStdDB_TypedGetters_OutOfRange verifies typed leaf methods return
+// false for out-of-range indices and missing keys.
+func TestStdDB_TypedGetters_OutOfRange(t *testing.T) {
+	l := couac.List{Values: []any{int32(1)}}
+	_, ok := l.Int32At(-1)
+	if ok {
+		t.Error("Int32At(-1): expected false")
+	}
+	_, ok = l.Int32At(99)
+	if ok {
+		t.Error("Int32At(99): expected false")
+	}
+
+	s := couac.Struct{Fields: map[string]any{"a": int32(1)}}
+	_, ok = s.Int32("nonexistent")
+	if ok {
+		t.Error("Int32(nonexistent): expected false")
+	}
+
+	m := couac.Map{Values: map[string]any{"a": int32(1)}}
+	_, ok = m.Int32("nonexistent")
+	if ok {
+		t.Error("Int32(nonexistent): expected false")
+	}
+}
+
+// TestStdDB_TypedGetters_TypeMismatch verifies typed leaf methods return
+// false when the stored type doesn't match.
+func TestStdDB_TypedGetters_TypeMismatch(t *testing.T) {
+	l := couac.List{Values: []any{"hello"}}
+	_, ok := l.Int32At(0)
+	if ok {
+		t.Error("Int32At on string: expected false")
+	}
+
+	s := couac.Struct{Fields: map[string]any{"name": "Alice"}}
+	_, ok = s.Int32("name")
+	if ok {
+		t.Error("Int32 on string: expected false")
+	}
+
+	m := couac.Map{Values: map[string]any{"k": "v"}}
+	_, ok = m.Int32("k")
+	if ok {
+		t.Error("Int32 on string: expected false")
+	}
+}
+
+// TestStdDB_ChainingThroughMissing verifies that chaining through a
+// missing or NULL intermediate always yields zero/false at the end.
+func TestStdDB_ChainingThroughMissing(t *testing.T) {
+	s := couac.Struct{Fields: map[string]any{"name": "Alice"}}
+
+	// Chain through nonexistent struct field
+	_, ok := s.Struct("nope").Str("city")
+	if ok {
+		t.Error("chain through missing: expected false")
+	}
+
+	// Chain through nonexistent list field
+	ints := s.List("nope").Ints()
+	if len(ints) != 0 {
+		t.Errorf("chain through missing list: expected empty, got %v", ints)
+	}
+
+	// Chain through nonexistent map field
+	_, ok = s.Map("nope").Int32("key")
+	if ok {
+		t.Error("chain through missing map: expected false")
+	}
+
+	// Deep chain through all zeros
+	_, ok = s.Struct("nope").Struct("also_nope").List("deep").MapAt(0).Int32("k")
+	if ok {
+		t.Error("deep chain through zeros: expected false")
+	}
+}

@@ -417,8 +417,95 @@ l := couac.List{Values: []any{int64(1), int64(2), int64(3)}}
 stdDB.QueryRowContext(ctx, "SELECT ?::INTEGER[]", l)
 ```
 
-The `*sql.Rows` returned by `StdDB()` queries support column type
-introspection via `ColumnTypes()`:
+#### Deep nesting (recursive conversion)
+
+All nested types are recursively converted to Go-native types at any
+depth — no intermediate JSON step. Inner `LIST` columns become `[]any`,
+inner `STRUCT` columns become `map[string]any`, and inner `MAP` columns
+become `map[string]any`. NULL values at any nesting level are `nil`.
+
+**Navigate and extract with fully chainable methods** — no manual `Scan`
+calls, no type assertions, no intermediate variables:
+
+| Method | Purpose |
+|---|---|
+| `s.Struct("f")` / `s.List("f")` / `s.Map("f")` | Navigate from `Struct` to nested child |
+| `m.Struct("k")` / `m.List("k")` / `m.Map("k")` | Navigate from `Map` to nested child |
+| `l.StructAt(i)` / `l.ListAt(i)` / `l.MapAt(i)` | Navigate from `List` to nested child |
+| `s.Str("f")` / `s.Int32("f")` / `s.Int64("f")` / `s.Float64("f")` / `s.Bool("f")` | Typed leaf from `Struct` |
+| `m.Str("k")` / `m.Int32("k")` / `m.Int64("k")` / `m.Float64("k")` / `m.Bool("k")` | Typed leaf from `Map` |
+| `l.StringAt(i)` / `l.Int32At(i)` / `l.Int64At(i)` / `l.Float64At(i)` / `l.BoolAt(i)` | Typed leaf from `List` |
+
+Navigation methods return a **zero value** on failure (missing key, NULL,
+wrong type). Zero values are safe to chain on — further calls simply
+return more zeros. Leaf accessors return `(T, bool)` where `bool` is
+`false` for any failure in the chain.
+
+**Nested lists** (`INTEGER[][]`):
+
+```go
+var outer couac.List
+stdDB.QueryRowContext(ctx, "SELECT [[1, 2], [3, 4, 5]]::INTEGER[][]").Scan(&outer)
+
+fmt.Println(outer.ListAt(0).Ints()) // []int64{1, 2}
+```
+
+**Struct containing struct**:
+
+```go
+var s couac.Struct
+stdDB.QueryRowContext(ctx,
+    "SELECT {'name': 'Alice', 'address': {'city': 'Montreal', 'zip': '12345'}}::"+
+        "STRUCT(name VARCHAR, address STRUCT(city VARCHAR, zip VARCHAR))",
+).Scan(&s)
+
+name, _ := s.Str("name")                     // "Alice"
+city, _ := s.Struct("address").Str("city")    // "Montreal"
+```
+
+**List → Struct → List** (depth-3 chain):
+
+```go
+var outer couac.List
+stdDB.QueryRowContext(ctx,
+    "SELECT [{'name': 'a', 'vals': [1, 2]}]::STRUCT(name VARCHAR, vals INTEGER[])[]",
+).Scan(&outer)
+
+name, _ := outer.StructAt(0).Str("name")      // "a"
+fmt.Println(outer.StructAt(0).List("vals").Ints()) // []int64{1, 2}
+```
+
+**Map with struct values**:
+
+```go
+var m couac.Map
+stdDB.QueryRowContext(ctx,
+    "SELECT MAP {'alice': {'age': 30}}::MAP(VARCHAR, STRUCT(age INTEGER))",
+).Scan(&m)
+
+age, _ := m.Struct("alice").Int32("age")  // int32(30)
+```
+
+**NULL values** — chaining through NULL safely yields `(zero, false)`:
+
+```go
+// NULL element in a list
+var l couac.List
+stdDB.QueryRowContext(ctx, "SELECT [1, NULL, 3]::INTEGER[]").Scan(&l)
+_, ok := l.Int32At(1) // ok == false (NULL)
+
+// NULL struct field
+var s couac.Struct
+stdDB.QueryRowContext(ctx,
+    "SELECT {'name': 'Alice', 'score': NULL}::STRUCT(name VARCHAR, score INTEGER)",
+).Scan(&s)
+_, ok = s.Int32("score") // ok == false (NULL)
+
+// NULL inner list — chaining through yields empty
+var outer couac.List
+stdDB.QueryRowContext(ctx, "SELECT [[1], NULL, [3]]::INTEGER[][]").Scan(&outer)
+fmt.Println(outer.ListAt(1).Ints()) // [] (empty — NULL inner list)
+```
 
 ```go
 rows, _ := stdDB.QueryContext(ctx, "SELECT id, price FROM products")
