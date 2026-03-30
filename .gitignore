@@ -1,3 +1,7 @@
 vendor
 *.work
 cmd
+*.db
+*.duckdb*
+*.wal
+*.tmp/
