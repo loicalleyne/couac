@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, perf]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Go ${{ matrix.go }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        go: ["1.26.x"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Install DuckDB ADBC driver
+        run: |
+          curl -LsSf https://dbc.columnar.tech/install.sh | sh
+          dbc install duckdb
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -count=1 -timeout 180s ./...
+
+      - name: Test (race detector)
+        run: go test -count=1 -race -timeout 300s -run '^Test' ./...

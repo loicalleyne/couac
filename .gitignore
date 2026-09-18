@@ -5,3 +5,4 @@ cmd
 *.duckdb*
 *.wal
 *.tmp/
+/plan

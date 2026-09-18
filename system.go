@@ -83,14 +83,9 @@ func (q *DB) Compact(ctx context.Context) error {
 	}
 
 	// Step 3: Copy data to compacted file
-	copyErr := execSQL("COPY FROM DATABASE memory TO _couac_compact")
-	// Try to figure out the current database name for file-backed DBs
-	if copyErr != nil {
-		// For file-backed DBs the catalog name may differ; try generic approach
-		baseName := filepath.Base(q.path)
-		baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
-		copyErr = execSQL(fmt.Sprintf("COPY FROM DATABASE %s TO _couac_compact", quoteIdentifier(baseName)))
-	}
+	baseName := filepath.Base(q.path)
+	baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	copyErr := execSQL(fmt.Sprintf("COPY FROM DATABASE %s TO _couac_compact", quoteIdentifier(baseName)))
 
 	// Always try to detach, even on copy error
 	detachErr := execSQL("DETACH _couac_compact")
@@ -370,7 +365,9 @@ func SecretsDir() string {
 }
 
 // execOnConn executes a single SQL statement on a raw ADBC connection.
-func execOnConn(ctx context.Context, conn interface{ NewStatement() (adbc.Statement, error) }, sql string) error {
+func execOnConn(ctx context.Context, conn interface {
+	NewStatement() (adbc.Statement, error)
+}, sql string) error {
 	stmt, err := conn.NewStatement()
 	if err != nil {
 		return err
